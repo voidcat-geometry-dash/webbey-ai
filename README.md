@@ -1,4 +1,4 @@
-# i have no help so it takes long for updates
+# i have no help so it takes long for updates please help out with this im going to close project in a 3 weeks or so
 
 # webbey-ai
 a way for github  and others websites to use ai
