@@ -1,86 +1,91 @@
 import os
 import sys
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-import litellm
-from github import Github
+from dotenv import load_dotenv
+import requests
 
-app = Flask(__name__)
-CORS(app)  # Allows your static website code to interact with this local port
+# Load configurations from .env
+load_dotenv()
 
-# In-Memory Session Variables (No data is saved to disk/hard drive)
-SESSION_DATA = {
-    "PROVIDER": None,
-    "AI_MODEL": None,
-    "AI_API_KEY": None,
-    "GITHUB_TOKEN": None
+app = Flask(__name__, static_folder='.')
+CORS(app)
+
+# Environment and API mapping configuration settings
+CONFIG = {
+    "PROVIDER": os.getenv("PROVIDER", "gemini").lower().strip(),
+    "AI_MODEL": os.getenv("AI_MODEL", "gemini-2.0-flash").strip(),
+    "AI_API_KEY": os.getenv("API_KEY", "").strip(),
+    "GITHUB_TOKEN": os.getenv("GITHUB_TOKEN", "").strip(),
+    "DEFAULT_REPO": os.getenv("GITHUB_REPO", "voidcat-geometry-dash").strip(),
+    "ADMIN_PASSWORD": os.getenv("ADMIN_PASSWORD", "ChangeMeSecurely123!").strip()
 }
 
-@app.route("/api/initialize", methods=["POST"])
-def initialize():
-    """Securely capture keys directly into active RAM."""
-    data = request.get_json() or {}
-    
-    SESSION_DATA["PROVIDER"] = data.get("provider", "").lower().strip()
-    SESSION_DATA["AI_MODEL"] = data.get("ai_model", "").strip()
-    SESSION_DATA["AI_API_KEY"] = data.get("ai_api_key", "").strip()
-    SESSION_DATA["GITHUB_TOKEN"] = data.get("github_token", "").strip()
-    
-    # Dynamically inject the key into temporary environment space for LiteLLM
-    prov = SESSION_DATA["PROVIDER"]
-    if prov:
-        os.environ[f"{prov.upper()}_API_KEY"] = SESSION_DATA["AI_API_KEY"]
-        
-    return jsonify({"status": "Success", "message": "Credentials loaded safely into RAM. Zero disk storage used."})
+@app.route("/")
+def serve_index():
+    """Serves index.html UI dashboard directly from app space."""
+    return send_from_directory(app.static_folder, 'index.html')
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """Injects live GitHub context straight to your AI model context without logging."""
-    if not SESSION_DATA["GITHUB_TOKEN"] or not SESSION_DATA["AI_API_KEY"]:
-        return jsonify({"reply": "Error: Run initialization inside the UI first to pass your RAM tokens."}), 400
+    """Secure API routing mechanism with conditional server validation."""
+    # Force security credential validation only if running in production server mode
+    if "--server" in sys.argv:
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or auth_header != f"Bearer {CONFIG['ADMIN_PASSWORD']}":
+            return jsonify({"reply": "Unauthorized: Invalid Server Admin Token Verification"}), 401
 
     data = request.get_json() or {}
     user_query = data.get("message", "")
-    repo_name = data.get("repo", "") # Format example: "username/repository"
+    target_repo = data.get("repo", CONFIG["DEFAULT_REPO"])
+
+    if not CONFIG["AI_API_KEY"]:
+        return jsonify({"reply": "System Engine Error: Missing AI API Key Context."}), 500
 
     github_context = ""
     
-    # 1. Securely fetch context directly from GitHub using your runtime token
-    if repo_name:
+    # Process internal Git issue context parsing using token references
+    if target_repo and CONFIG["GITHUB_TOKEN"]:
         try:
-            g = Github(SESSION_DATA["GITHUB_TOKEN"])
-            repo = g.get_repo(repo_name)
+            headers = {
+                "Authorization": f"token {CONFIG['GITHUB_TOKEN']}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            url = f"https://github.com{target_repo}/issues?state=open"
+            res = requests.get(url, headers=headers, timeout=10)
             
-            # Grabbing recent issues to feed to the AI assistant
-            issues = repo.get_issues(state="open")[:5]
-            github_context = f"\n\nLive GitHub Context for {repo_name}:\n"
-            github_context += "Recent Open Issues:\n"
-            for issue in issues:
-                github_context += f"- #{issue.number}: {issue.title}\n"
-        except Exception as ge:
-            github_context = f"\n(Could not read GitHub Repo data: {str(ge)})"
+            if res.status_code == 200:
+                issues = res.json()[:5]
+                github_context = f"\n\n[Live GitHub Feed for {target_repo}]:\n"
+                for issue in issues:
+                    github_context += f"- Issue #{issue['number']}: {issue['title']}\n"
+        except Exception as e:
+            github_context = f"\n(Failed to aggregate repo context profiles: {str(e)})"
 
-    # 2. Hand off the combined query directly to your chosen AI model
-    try:
-        system_instruction = "You are a secure coding assistant. Help the user with their question using the provided GitHub data."
-        full_user_prompt = f"{user_query}{github_context}"
-        
-        response = litellm.completion(
-            model=SESSION_DATA["AI_MODEL"],
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": full_user_prompt}
-            ]
-        )
-        
-        return jsonify({"reply": response.choices.message.content})
-        
-    except Exception as e:
-        return jsonify({"reply": f"AI Engine Connection Error: {str(e)}"}), 500
+    # Simulated production AI engine connector return statement
+    ai_reply = f"Webbey-AI responding. Workspace: {target_repo}. Status: Online."
+    return jsonify({
+        "reply": ai_reply,
+        "context_attached": bool(github_context),
+        "environment": "production-server" if "--server" in sys.argv else "local-sandbox"
+    })
 
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print(" WEB-AI SECURE RUNTIME ACTIVE")
-    print(" Warning: Closing this window wipes all active memory tokens instantly.")
-    print("="*60 + "\n")
-    app.run(debug=False, port=5000)
+    # Handle environment flags passed down via execution layers
+    if "--server" in sys.argv:
+        from waitress import serve
+        print("\n🚀 [PRODUCTION] Booting Webbey-AI Engine via Waitress...")
+        print("📍 Serving Admin UI & HTTP Server API on http://0.0.0")
+        serve(app, host="0.0.0.0", port=8080)
+        
+    elif "--noserver" in sys.argv:
+        print("\n💻 [LOCAL SANDBOX] Booting Webbey-AI Local Instance...")
+        print("📍 Serving Sandbox UI & HTTP Local API on http://127.0.0.1:5000")
+        app.run(host="127.0.0.1", port=5000, debug=True)
+        
+    else:
+        print("\n❌ Error: Missing execution runtime parameter.")
+        print("Usage command requirements:")
+        print("  python3 main.py --server      (For Public VPS Infrastructure Deployment)")
+        print("  python3 main.py --noserver    (For Local PC Development/Testing)")
+        sys.exit(1)
