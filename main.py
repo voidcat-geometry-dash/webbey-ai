@@ -1,60 +1,86 @@
 import os
+import sys
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from dotenv import load_dotenv
 import litellm
-
-# Load configurations from .env
-load_dotenv()
+from github import Github
 
 app = Flask(__name__)
-CORS(app)  # Enables your static website to connect from any local origin
+CORS(app)  # Allows your static website code to interact with this local port
 
-# Read config from .env
-PROVIDER = os.getenv("PROVIDER", "").lower()
-MODEL_NAME = os.getenv("AI_MODEL", "")
-API_KEY = os.getenv("API_KEY", "")
+# In-Memory Session Variables (No data is saved to disk/hard drive)
+SESSION_DATA = {
+    "PROVIDER": None,
+    "AI_MODEL": None,
+    "AI_API_KEY": None,
+    "GITHUB_TOKEN": None
+}
 
-# Dynamically map the generic API_KEY variable to what LiteLLM expects based on your provider
-if PROVIDER == "gemini":
-    os.environ["GEMINI_API_KEY"] = API_KEY
-elif PROVIDER == "openai":
-    os.environ["OPENAI_API_KEY"] = API_KEY
-elif PROVIDER == "anthropic":
-    os.environ["ANTHROPIC_API_KEY"] = API_KEY
-elif PROVIDER == "cohere":
-    os.environ["COHERE_API_KEY"] = API_KEY
-else:
-    # Fallback default: set a direct provider variable if needed
-    os.environ[f"{PROVIDER.upper()}_API_KEY"] = API_KEY
+@app.route("/api/initialize", methods=["POST"])
+def initialize():
+    """Securely capture keys directly into active RAM."""
+    data = request.get_json() or {}
+    
+    SESSION_DATA["PROVIDER"] = data.get("provider", "").lower().strip()
+    SESSION_DATA["AI_MODEL"] = data.get("ai_model", "").strip()
+    SESSION_DATA["AI_API_KEY"] = data.get("ai_api_key", "").strip()
+    SESSION_DATA["GITHUB_TOKEN"] = data.get("github_token", "").strip()
+    
+    # Dynamically inject the key into temporary environment space for LiteLLM
+    prov = SESSION_DATA["PROVIDER"]
+    if prov:
+        os.environ[f"{prov.upper()}_API_KEY"] = SESSION_DATA["AI_API_KEY"]
+        
+    return jsonify({"status": "Success", "message": "Credentials loaded safely into RAM. Zero disk storage used."})
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    data = request.get_json() or {}
-    user_message = data.get("message", "")
-    
-    if not user_message:
-        return jsonify({"reply": "Error: Empty message provided."}), 400
-        
-    if not MODEL_NAME:
-        return jsonify({"reply": "Error: AI_MODEL not specified in .env file."}), 500
+    """Injects live GitHub context straight to your AI model context without logging."""
+    if not SESSION_DATA["GITHUB_TOKEN"] or not SESSION_DATA["AI_API_KEY"]:
+        return jsonify({"reply": "Error: Run initialization inside the UI first to pass your RAM tokens."}), 400
 
+    data = request.get_json() or {}
+    user_query = data.get("message", "")
+    repo_name = data.get("repo", "") # Format example: "username/repository"
+
+    github_context = ""
+    
+    # 1. Securely fetch context directly from GitHub using your runtime token
+    if repo_name:
+        try:
+            g = Github(SESSION_DATA["GITHUB_TOKEN"])
+            repo = g.get_repo(repo_name)
+            
+            # Grabbing recent issues to feed to the AI assistant
+            issues = repo.get_issues(state="open")[:5]
+            github_context = f"\n\nLive GitHub Context for {repo_name}:\n"
+            github_context += "Recent Open Issues:\n"
+            for issue in issues:
+                github_context += f"- #{issue.number}: {issue.title}\n"
+        except Exception as ge:
+            github_context = f"\n(Could not read GitHub Repo data: {str(ge)})"
+
+    # 2. Hand off the combined query directly to your chosen AI model
     try:
-        # LiteLLM automatically detects the provider route by looking at the model prefix 
-        # or the environment variables we mapped above.
+        system_instruction = "You are a secure coding assistant. Help the user with their question using the provided GitHub data."
+        full_user_prompt = f"{user_query}{github_context}"
+        
         response = litellm.completion(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": user_message}]
+            model=SESSION_DATA["AI_MODEL"],
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": full_user_prompt}
+            ]
         )
         
-        # Safely extract text from the standard OpenAI-style response format
-        ai_reply = response.choices[0].message.content
-        return jsonify({"reply": ai_reply})
+        return jsonify({"reply": response.choices.message.content})
         
     except Exception as e:
-        return jsonify({"reply": f"Backend Error processing AI request: {str(e)}"}), 500
+        return jsonify({"reply": f"AI Engine Connection Error: {str(e)}"}), 500
 
 if __name__ == "__main__":
-    # Start the backend server on port 5000
-    print(f"Backend active. Routing traffic to Provider: [{PROVIDER}] | Model: [{MODEL_NAME}]")
-    app.run(debug=True, port=5000)
+    print("\n" + "="*60)
+    print(" WEB-AI SECURE RUNTIME ACTIVE")
+    print(" Warning: Closing this window wipes all active memory tokens instantly.")
+    print("="*60 + "\n")
+    app.run(debug=False, port=5000)
